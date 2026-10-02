@@ -151,6 +151,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv-rfdetr/
 env/
 venv/
 ENV/
@@ -224,3 +225,4 @@ __marimo__/
 /runs/
 *.pt
 *.pth
+*.ckpt

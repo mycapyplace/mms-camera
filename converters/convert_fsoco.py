@@ -32,15 +32,11 @@ EXPECTED_BOXES = {
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
-def convert(manifest: Path, output: Path) -> None:
+def load_manifest(manifest: Path):
+    """Validate the frozen split and source boxes before either format is written."""
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     if digest != EXPECTED_MANIFEST_SHA256:
         raise ValueError(f"Manifest SHA-256 mismatch: {digest}; expected {EXPECTED_MANIFEST_SHA256}")
-    if output.exists() or output.is_symlink():
-        raise FileExistsError(f"Output already exists; choose a new path: {output}")
-    if "\n" in str(output) or "'" in str(output):
-        raise ValueError("Output path cannot contain a quote or newline")
-
     # Validate the complete input before creating any output.
     entries = []
     seen = set()
@@ -73,7 +69,7 @@ def convert(manifest: Path, output: Path) -> None:
         width, height = data["size"]["width"], data["size"]["height"]
         if not isinstance(width, int) or not isinstance(height, int) or min(width, height) <= 0:
             raise ValueError(f"Row {line_number}: invalid image dimensions")
-        labels = []
+        rectangles = []
         for obj in data.get("objects", []):
             name = obj.get("classTitle")
             if obj.get("geometryType") != "rectangle" or name not in CLASS_IDS:
@@ -82,12 +78,10 @@ def convert(manifest: Path, output: Path) -> None:
             if not (all(math.isfinite(v) for v in (x1, y1, x2, y2))
                     and 0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
                 raise ValueError(f"Row {line_number}: invalid rectangle {name}")
-            labels.append(f"{CLASS_IDS[name]} {(x1 + x2) / (2 * width):.8f} "
-                          f"{(y1 + y2) / (2 * height):.8f} "
-                          f"{(x2 - x1) / width:.8f} {(y2 - y1) / height:.8f}")
+            rectangles.append((CLASS_IDS[name], x1, y1, x2, y2))
             boxes[split][name] += 1
         images[split] += 1
-        entries.append((split, image, stem, labels))
+        entries.append((split, image, stem, width, height, rectangles))
 
     if dict(images) != EXPECTED_IMAGES:
         raise ValueError(f"Unexpected image counts: {dict(images)}")
@@ -96,11 +90,24 @@ def convert(manifest: Path, output: Path) -> None:
         if actual != EXPECTED_BOXES[split]:
             raise ValueError(f"Unexpected {split} box counts: {actual}")
 
+    return digest, entries, images, boxes
+
+
+def convert(manifest: Path, output: Path) -> None:
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(f"Output already exists; choose a new path: {output}")
+    if "\n" in str(output) or "'" in str(output):
+        raise ValueError("Output path cannot contain a quote or newline")
+    digest, entries, images, boxes = load_manifest(manifest)
     output.mkdir(parents=True)  # refuses an existing output; never clears data
     for split in SPLITS:
         (output / "images" / split).mkdir(parents=True)
         (output / "labels" / split).mkdir(parents=True)
-    for split, image, stem, labels in entries:
+    for split, image, stem, width, height, rectangles in entries:
+        labels = [f"{class_id} {(x1 + x2) / (2 * width):.8f} "
+                  f"{(y1 + y2) / (2 * height):.8f} "
+                  f"{(x2 - x1) / width:.8f} {(y2 - y1) / height:.8f}"
+                  for class_id, x1, y1, x2, y2 in rectangles]
         link = output / "images" / split / f"{stem}{image.suffix}"
         os.symlink(image.resolve(), link)
         (output / "labels" / split / f"{stem}.txt").write_text(
